@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python outreach.py",
+    "startCommand": "python app.py",
     "restartPolicyType": "ALWAYS",
     "restartPolicyMaxRetries": 10
   }
