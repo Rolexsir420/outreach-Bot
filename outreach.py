@@ -18,54 +18,42 @@ IST = pytz.timezone("Asia/Kolkata")
 # ── env variables ─────────────────────────────────────────────────────
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
+SESSION_STRING = os.getenv("SESSION_1")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL"))
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", 25))
-INVITE_LINK = os.getenv("INVITE_LINK", "")
 
-SESSION_STRINGS = []
-for i in range(1, 6):
-    s = os.getenv(f"SESSION_{i}")
-    if s:
-        SESSION_STRINGS.append(s)
+client = Client(
+    "outreach",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    session_string=SESSION_STRING
+)
 
-# ── create clients for each account ──────────────────────────────────
-clients = []
-for idx, session in enumerate(SESSION_STRINGS):
-    clients.append(Client(
-        f"account_{idx+1}",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        session_string=session
-    ))
-
-PRIMARY_CLIENT = clients[0]
 MY_ID = None
+processing = False
 
 # ── startup ───────────────────────────────────────────────────────────
 async def on_start():
     global MY_ID
     try:
-        me = await PRIMARY_CLIENT.get_me()
+        me = await client.get_me()
         MY_ID = me.id
 
-        async for dialog in PRIMARY_CLIENT.get_dialogs():
+        async for dialog in client.get_dialogs():
             pass
 
-        await PRIMARY_CLIENT.get_chat(LOG_CHANNEL)
+        await client.get_chat(LOG_CHANNEL)
 
-        account_names = []
-        for c in clients:
-            u = await c.get_me()
-            account_names.append(u.first_name)
-
-        await PRIMARY_CLIENT.send_message(LOG_CHANNEL,
+        await client.send_message(LOG_CHANNEL,
             f"✅ **Outreach Bot Online**\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"👥 Accounts ready : {len(clients)}\n"
-            f"📋 Accounts       : {', '.join(account_names)}\n"
-            f"📨 Daily limit    : {DAILY_LIMIT} per account\n"
-            f"🕐 Time           : {datetime.now(IST).strftime('%d %b %Y, %H:%M IST')}\n"
-            f"━━━━━━━━━━━━━━━━━━━━"
+            f"👤 Account : {me.first_name}\n"
+            f"📨 Daily limit : {DAILY_LIMIT}\n"
+            f"🕐 Time : {datetime.now(IST).strftime('%d %b %Y, %H:%M IST')}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📋 Upload CSV to Saved Messages\n"
+            f"📝 Type your message above CSV\n"
+            f"⏳ Bot auto-detects and sends"
         )
         print(f"Startup complete. MY_ID={MY_ID}")
     except Exception as e:
@@ -83,8 +71,6 @@ async def read_csv_from_message(message: Message) -> list:
                     "uid": int(row.get("uid", 0)),
                     "username": row.get("username", "N/A"),
                     "name": row.get("name", "Unknown"),
-                    "profile_link": row.get("profile_link",
-                        f"tg://user?id={row.get('uid', 0)}")
                 })
         os.remove(file_path)
     except Exception as e:
@@ -92,29 +78,25 @@ async def read_csv_from_message(message: Message) -> list:
     return contacts
 
 # ── send message to one user ──────────────────────────────────────────
-async def send_to_user(client: Client, contact: dict, msg_text: str, serial: int, account_name: str):
+async def send_to_user(contact: dict, msg_text: str, serial: int):
     uid = contact["uid"]
     name = contact["name"]
     profile_link = f"tg://user?id={uid}"
 
     try:
-        # personalise message
         personalised = msg_text.replace("{name}", name.split()[0] if name else "there")
-
         await client.send_message(uid, personalised)
 
-        await PRIMARY_CLIENT.send_message(LOG_CHANNEL,
+        await client.send_message(LOG_CHANNEL,
             f"✅ **#{serial} SENT**\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
             f"👤 [{name}]({profile_link})\n"
-            f"📤 Via : {account_name}\n"
-            f"━━━━━━━━━━━━━━━━━━━━",
+            f"🕐 {datetime.now(IST).strftime('%H:%M IST')}",
             disable_web_page_preview=True
         )
         return "sent"
 
     except UserPrivacyRestricted:
-        await PRIMARY_CLIENT.send_message(LOG_CHANNEL,
+        await client.send_message(LOG_CHANNEL,
             f"⚠️ **#{serial} SKIPPED**\n"
             f"👤 [{name}]({profile_link})\n"
             f"❌ Privacy restricted",
@@ -123,146 +105,109 @@ async def send_to_user(client: Client, contact: dict, msg_text: str, serial: int
         return "skipped"
 
     except UserIsBlocked:
-        await PRIMARY_CLIENT.send_message(LOG_CHANNEL,
-            f"⚠️ **#{serial} SKIPPED**\n"
-            f"👤 [{name}]({profile_link})\n"
-            f"❌ User blocked this account",
-            disable_web_page_preview=True
-        )
         return "skipped"
 
     except PeerIdInvalid:
-        await PRIMARY_CLIENT.send_message(LOG_CHANNEL,
-            f"⚠️ **#{serial} SKIPPED**\n"
-            f"👤 [{name}]({profile_link})\n"
-            f"❌ Cannot reach user",
-            disable_web_page_preview=True
-        )
         return "skipped"
 
     except FloodWait as fw:
-        print(f"FloodWait {fw.value}s on {account_name}")
+        print(f"FloodWait {fw.value}s")
         await asyncio.sleep(fw.value + 5)
-        return await send_to_user(client, contact, msg_text, serial, account_name)
+        return await send_to_user(contact, msg_text, serial)
 
     except Exception as e:
         print(f"Error sending to {uid}: {e}")
-        await PRIMARY_CLIENT.send_message(LOG_CHANNEL,
-            f"❌ **#{serial} FAILED**\n"
-            f"👤 [{name}]({profile_link})\n"
-            f"Error: {e}",
-            disable_web_page_preview=True
-        )
         return "failed"
 
-# ── send batch for one account ────────────────────────────────────────
-async def send_batch(client: Client, contacts: list, msg_text: str, start_serial: int):
-    me = await client.get_me()
-    account_name = me.first_name
-    results = {"sent": 0, "skipped": 0, "failed": 0}
-
-    for i, contact in enumerate(contacts):
-        serial = start_serial + i
-        result = await send_to_user(client, contact, msg_text, serial, account_name)
-        results[result] += 1
-
-        # random delay between 45-90 seconds — looks human
-        delay = random.randint(45, 90)
-        print(f"{account_name} waiting {delay}s before next message...")
-        await asyncio.sleep(delay)
-
-    return results
-
-# ── .outreach command ─────────────────────────────────────────────────
-@PRIMARY_CLIENT.on_message(filters.command("outreach", prefixes=".") & filters.outgoing)
-async def handle_outreach(client: Client, message: Message):
-    print("Outreach command received")
-
-    # find CSV in recent saved messages
-    csv_message = None
-    msg_text = None
-
-    async for msg in client.get_chat_history("me", limit=10):
-        if msg.document and msg.document.file_name.endswith(".csv"):
-            csv_message = msg
-            break
-
-    if not csv_message:
-        await message.reply("❌ No CSV file found in Saved Messages. Upload CSV first then type .outreach")
+# ── auto detect CSV and send ──────────────────────────────────────────
+@client.on_message(filters.document & filters.outgoing)
+async def handle_csv(client: Client, message: Message):
+    global processing
+    
+    if processing:
+        return
+    
+    # Check if it's a CSV file
+    if not message.document.file_name.endswith(".csv"):
         return
 
-    # find message text just above .outreach command
-    async for msg in client.get_chat_history("me", limit=10):
-        if msg.text and not msg.text.startswith(".outreach") and not msg.document:
-            msg_text = msg.text
-            break
+    processing = True
+    print("CSV detected! Starting outreach...")
 
-    if not msg_text:
-        await message.reply("❌ No message text found. Type your message in Saved Messages then .outreach")
-        return
+    try:
+        # Find message text just above CSV
+        msg_text = None
+        async for msg in client.get_chat_history("me", limit=5):
+            if msg.text and not msg.document and msg.id < message.id:
+                msg_text = msg.text
+                break
 
-    # read contacts from CSV
-    contacts = await read_csv_from_message(csv_message)
+        if not msg_text:
+            await client.send_message(LOG_CHANNEL,
+                "❌ No message text found above CSV. Type your message first, then upload CSV.")
+            processing = False
+            return
 
-    if not contacts:
-        await message.reply("❌ CSV is empty or invalid format")
-        return
+        # Read contacts from CSV
+        contacts = await read_csv_from_message(message)
 
-    # apply daily limit per account
-    limited_contacts = contacts[:DAILY_LIMIT * len(clients)]
+        if not contacts:
+            await client.send_message(LOG_CHANNEL,
+                "❌ CSV is empty or invalid format")
+            processing = False
+            return
 
-    # split contacts across accounts
-    chunks = []
-    chunk_size = DAILY_LIMIT
-    for i in range(0, len(limited_contacts), chunk_size):
-        chunks.append(limited_contacts[i:i + chunk_size])
+        # Apply daily limit
+        limited_contacts = contacts[:DAILY_LIMIT]
 
-    now = datetime.now(IST).strftime("%d %b %Y, %H:%M IST")
-    await PRIMARY_CLIENT.send_message(LOG_CHANNEL,
-        f"📤 **OUTREACH STARTED**\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📋 Total contacts  : {len(limited_contacts)}\n"
-        f"👥 Accounts active : {len(clients)}\n"
-        f"📨 Per account     : {DAILY_LIMIT}\n"
-        f"🕐 Time            : {now}\n"
-        f"━━━━━━━━━━━━━━━━━━━━"
-    )
+        now = datetime.now(IST).strftime("%d %b %Y, %H:%M IST")
+        await client.send_message(LOG_CHANNEL,
+            f"📤 **OUTREACH STARTED**\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📋 Total contacts : {len(limited_contacts)}\n"
+            f"🕐 Time : {now}\n"
+            f"━━━━━━━━━━━━━━━━━━━━"
+        )
 
-    # run all accounts simultaneously
-    tasks = []
-    serial_start = 1
-    for idx, (c, chunk) in enumerate(zip(clients, chunks)):
-        if chunk:
-            tasks.append(send_batch(c, chunk, msg_text, serial_start))
-            serial_start += len(chunk)
+        # Send to all contacts
+        total_sent = 0
+        total_skipped = 0
+        total_failed = 0
 
-    all_results = await asyncio.gather(*tasks)
+        for serial, contact in enumerate(limited_contacts, start=1):
+            result = await send_to_user(contact, msg_text, serial)
+            
+            if result == "sent":
+                total_sent += 1
+            elif result == "skipped":
+                total_skipped += 1
+            else:
+                total_failed += 1
 
-    # combine results
-    total_sent = sum(r["sent"] for r in all_results)
-    total_skipped = sum(r["skipped"] for r in all_results)
-    total_failed = sum(r["failed"] for r in all_results)
+            # Random delay 45-90 seconds
+            delay = random.randint(45, 90)
+            print(f"Waiting {delay}s before next message...")
+            await asyncio.sleep(delay)
 
-    end_time = datetime.now(IST).strftime("%d %b %Y, %H:%M IST")
-    await PRIMARY_CLIENT.send_message(LOG_CHANNEL,
-        f"✅ **OUTREACH COMPLETE**\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📨 Total sent    : {total_sent}\n"
-        f"⚠️ Skipped       : {total_skipped}\n"
-        f"❌ Failed        : {total_failed}\n"
-        f"🕐 Time          : {end_time}\n"
-        f"━━━━━━━━━━━━━━━━━━━━"
-    )
+        end_time = datetime.now(IST).strftime("%d %b %Y, %H:%M IST")
+        await client.send_message(LOG_CHANNEL,
+            f"✅ **OUTREACH COMPLETE**\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📨 Total sent : {total_sent}\n"
+            f"⚠️ Skipped : {total_skipped}\n"
+            f"❌ Failed : {total_failed}\n"
+            f"🕐 Time : {end_time}\n"
+            f"━━━━━━━━━━━━━━━━━━━━"
+        )
+
+    finally:
+        processing = False
 
 # ── entry point ───────────────────────────────────────────────────────
 async def main():
-    # start all clients
-    for c in clients:
-        await c.start()
-
+    await client.start()
     await on_start()
     print("Outreach bot running...")
-
-    await asyncio.Future()
+    await asyncio.Event().wait()
 
 asyncio.run(main())
