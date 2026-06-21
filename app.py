@@ -81,7 +81,11 @@ async def send_to_user(contact, msg_text, serial):
             disable_web_page_preview=True
         )
         return "skipped"
-    except (UserIsBlocked, PeerIdInvalid):
+    except (UserIsBlocked, PeerIdInvalid) as e:
+        await telegram_client.send_message(LOG_CHANNEL,
+            f"⚠️ **#{serial} SKIPPED**\n👤 [{name}]({profile_link})\n❌ {type(e).__name__}",
+            disable_web_page_preview=True
+        )
         return "skipped"
     except FloodWait as fw:
         await asyncio.sleep(fw.value + 5)
@@ -94,23 +98,49 @@ async def run_outreach(contacts, message):
     global processing
     total_sent = total_skipped = total_failed = 0
     now = datetime.now(IST).strftime("%d %b %Y, %H:%M IST")
-    await telegram_client.send_message(LOG_CHANNEL,
-        f"📤 **OUTREACH STARTED**\n📋 Total : {len(contacts)}\n🕐 {now}"
-    )
-    for serial, contact in enumerate(contacts, start=1):
-        result = await send_to_user(contact, message, serial)
-        if result == "sent": total_sent += 1
-        elif result == "skipped": total_skipped += 1
-        else: total_failed += 1
-        delay = random.randint(45, 90)
-        print(f"Waiting {delay}s...")
-        await asyncio.sleep(delay)
-    end_time = datetime.now(IST).strftime("%d %b %Y, %H:%M IST")
-    await telegram_client.send_message(LOG_CHANNEL,
-        f"✅ **OUTREACH COMPLETE**\n📨 Sent : {total_sent}\n⚠️ Skipped : {total_skipped}\n❌ Failed : {total_failed}\n🕐 {end_time}"
-    )
-    with processing_lock:
-        processing = False
+    try:
+        await telegram_client.send_message(LOG_CHANNEL,
+            f"📤 **OUTREACH STARTED**\n📋 Total : {len(contacts)}\n🕐 {now}"
+        )
+        for serial, contact in enumerate(contacts, start=1):
+            try:
+                result = await send_to_user(contact, message, serial)
+            except Exception as e:
+                # Catch anything send_to_user itself doesn't handle,
+                # so one bad contact can't kill the whole batch silently.
+                print(f"Unhandled error on #{serial}: {e}")
+                try:
+                    await telegram_client.send_message(LOG_CHANNEL,
+                        f"❌ **#{serial} ERROR**\n{type(e).__name__}: {e}"
+                    )
+                except Exception:
+                    pass
+                result = "failed"
+            if result == "sent": total_sent += 1
+            elif result == "skipped": total_skipped += 1
+            else: total_failed += 1
+            delay = random.randint(45, 90)
+            print(f"Waiting {delay}s...")
+            await asyncio.sleep(delay)
+        end_time = datetime.now(IST).strftime("%d %b %Y, %H:%M IST")
+        await telegram_client.send_message(LOG_CHANNEL,
+            f"✅ **OUTREACH COMPLETE**\n📨 Sent : {total_sent}\n⚠️ Skipped : {total_skipped}\n❌ Failed : {total_failed}\n🕐 {end_time}"
+        )
+    except Exception as e:
+        # Catches anything that escapes the loop entirely (e.g. a crash
+        # right after OUTREACH STARTED) so it's never silently swallowed
+        # by run_coroutine_threadsafe.
+        print(f"run_outreach crashed: {e}")
+        try:
+            await telegram_client.send_message(LOG_CHANNEL,
+                f"🛑 **OUTREACH CRASHED**\n{type(e).__name__}: {e}\n"
+                f"📨 Sent so far : {total_sent}\n⚠️ Skipped : {total_skipped}\n❌ Failed : {total_failed}"
+            )
+        except Exception:
+            pass
+    finally:
+        with processing_lock:
+            processing = False
 
 @app.route('/')
 def index():
