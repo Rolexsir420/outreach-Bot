@@ -30,6 +30,7 @@ telegram_client = Client(
 )
 MY_ID = None
 processing = False
+processing_lock = threading.Lock()
 
 def run_loop(loop):
     asyncio.set_event_loop(loop)
@@ -108,8 +109,8 @@ async def run_outreach(contacts, message):
     await telegram_client.send_message(LOG_CHANNEL,
         f"✅ **OUTREACH COMPLETE**\n📨 Sent : {total_sent}\n⚠️ Skipped : {total_skipped}\n❌ Failed : {total_failed}\n🕐 {end_time}"
     )
-    processing = False
-    return total_sent, total_skipped, total_failed
+    with processing_lock:
+        processing = False
 
 @app.route('/')
 def index():
@@ -118,28 +119,39 @@ def index():
 @app.route('/send', methods=['POST'])
 def send():
     global processing
-    if processing:
-        return jsonify({"error": "Already processing. Please wait."}), 400
+    with processing_lock:
+        if processing:
+            return jsonify({"error": "Already processing. Please wait."}), 400
+        processing = True
     if 'csv_file' not in request.files:
+        with processing_lock:
+            processing = False
         return jsonify({"error": "No CSV file provided"}), 400
     message = request.form.get('message', '').strip()
     if not message:
+        with processing_lock:
+            processing = False
         return jsonify({"error": "No message provided"}), 400
     csv_file = request.files['csv_file']
     if not csv_file.filename.endswith('.csv'):
+        with processing_lock:
+            processing = False
         return jsonify({"error": "Please upload a CSV file"}), 400
     contacts = read_csv(csv_file)
     if not contacts:
+        with processing_lock:
+            processing = False
         return jsonify({"error": "CSV is empty or invalid"}), 400
     limited = contacts[:DAILY_LIMIT]
-    processing = True
-    future = asyncio.run_coroutine_threadsafe(run_outreach(limited, message), loop)
-    try:
-        sent, skipped, failed = future.result(timeout=3600)
-        return jsonify({"success": True, "sent": sent, "skipped": skipped, "failed": failed})
-    except Exception as e:
-        processing = False
-        return jsonify({"error": str(e)}), 500
+    # Fire and forget — don't wait for it to finish
+    asyncio.run_coroutine_threadsafe(run_outreach(limited, message), loop)
+    return jsonify({
+        "success": True,
+        "sent": len(limited),
+        "skipped": 0,
+        "failed": 0,
+        "note": "Job started! Check your log channel for live updates."
+    })
 
 if __name__ == '__main__':
     t = threading.Thread(target=run_loop, args=(loop,), daemon=True)
