@@ -1,1 +1,1 @@
-worker: python outreach.py
+web: python app.py
