@@ -16,7 +16,7 @@
         h1 { color: #333; margin-bottom: 30px; text-align: center; font-size: 28px; }
         .form-group { margin-bottom: 25px; }
         label { display: block; color: #555; font-weight: 500; margin-bottom: 8px; }
-        input[type="file"], textarea { width: 100%; padding: 12px; border: 2px solid #e0e0e0; border-radius: 6px; font-family: inherit; font-size: 14px; }
+        input[type="file"], input[type="text"], textarea { width: 100%; padding: 12px; border: 2px solid #e0e0e0; border-radius: 6px; font-family: inherit; font-size: 14px; }
         textarea { resize: vertical; min-height: 120px; }
         .hint { font-size: 12px; color: #999; margin-top: 5px; }
         button { width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 6px; font-size: 16px; font-weight: 600; cursor: pointer; }
@@ -34,6 +34,11 @@
         <h1>📤 Outreach Bot</h1>
         <form id="outreachForm">
             <div class="form-group">
+                <label>🔗 Group Link</label>
+                <input type="text" id="group_link" name="group_link" placeholder="https://t.me/yourgroup" required>
+                <div class="hint">Bot will join, load peers, leave, then send DMs</div>
+            </div>
+            <div class="form-group">
                 <label>📋 Upload CSV File</label>
                 <input type="file" id="csv_file" name="csv_file" accept=".csv" required>
                 <div class="hint">Must have: uid, username, name columns</div>
@@ -45,7 +50,7 @@
             </div>
             <button type="submit" id="submitBtn">Send to All Users</button>
         </form>
-        <div class="loading" id="loading"><div class="spinner"></div><p>Sending messages...</p></div>
+        <div class="loading" id="loading"><div class="spinner"></div><p>Processing... Bot is joining group, loading peers, leaving, then sending messages...</p></div>
         <div id="resultDiv" class="message" style="display:none;"></div>
     </div>
     <script>
@@ -58,6 +63,7 @@
             loading.style.display = 'block';
             resultDiv.style.display = 'none';
             const formData = new FormData();
+            formData.append('group_link', document.getElementById('group_link').value);
             formData.append('csv_file', document.getElementById('csv_file').files[0]);
             formData.append('message', document.getElementById('msg').value);
             try {
@@ -65,7 +71,7 @@
                 const data = await response.json();
                 if (data.success) {
                     resultDiv.className = 'message success';
-                    resultDiv.innerHTML = `✅ Done!<br>Sent: ${data.sent} | Skipped: ${data.skipped} | Failed: ${data.failed}`;
+                    resultDiv.innerHTML = `✅ Done!<br>Sent: ${data.sent} | Skipped: ${data.skipped} | Failed: ${data.failed}<br><small>Check your log channel for details</small>`;
                 } else {
                     resultDiv.className = 'message error';
                     resultDiv.innerHTML = `❌ Error: ${data.error}`;
@@ -83,3 +89,4 @@
     </script>
 </body>
 </html>
+ 
