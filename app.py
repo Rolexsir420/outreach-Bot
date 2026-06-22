@@ -8,7 +8,7 @@ from datetime import datetime
 from flask import Flask, render_template, request, jsonify
 import pytz
 from pyrogram import Client
-from pyrogram.errors import FloodWait, UserPrivacyRestricted, PeerIdInvalid, UserIsBlocked
+from pyrogram.errors import FloodWait, UserPrivacyRestricted, PeerIdInvalid, UserIsBlocked, InviteHashInvalid, InviteHashExpired
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
@@ -94,50 +94,97 @@ async def send_to_user(contact, msg_text, serial):
         print(f"Error sending to {uid}: {e}")
         return "failed"
 
-async def run_outreach(contacts, message):
+async def run_outreach(contacts, message, group_link):
     global processing
     total_sent = total_skipped = total_failed = 0
     now = datetime.now(IST).strftime("%d %b %Y, %H:%M IST")
+    
     try:
         await telegram_client.send_message(LOG_CHANNEL,
             f"📤 **OUTREACH STARTED**\n📋 Total : {len(contacts)}\n🕐 {now}"
         )
+        
+        # Step 1: Join group
+        try:
+            await telegram_client.send_message(LOG_CHANNEL, f"🔗 Joining group...")
+            await telegram_client.join_chat(group_link)
+            await telegram_client.send_message(LOG_CHANNEL, f"✅ Successfully joined group")
+            print("✅ Bot joined group")
+        except InviteHashInvalid:
+            await telegram_client.send_message(LOG_CHANNEL, f"❌ Invalid group link")
+            processing = False
+            return
+        except InviteHashExpired:
+            await telegram_client.send_message(LOG_CHANNEL, f"❌ Group invite link expired")
+            processing = False
+            return
+        except Exception as e:
+            await telegram_client.send_message(LOG_CHANNEL, f"❌ Failed to join group: {type(e).__name__}")
+            print(f"Error joining group: {e}")
+            processing = False
+            return
+        
+        # Step 2: Load all members into peer cache
+        try:
+            await telegram_client.send_message(LOG_CHANNEL, f"📥 Loading peer cache...")
+            member_count = 0
+            async for member in telegram_client.get_chat_members(group_link):
+                member_count += 1
+            await telegram_client.send_message(LOG_CHANNEL, f"✅ Loaded {member_count} members into cache")
+            print(f"✅ Loaded {member_count} members into peer cache")
+        except Exception as e:
+            await telegram_client.send_message(LOG_CHANNEL, f"⚠️ Error loading peers: {type(e).__name__}")
+            print(f"Error loading peers: {e}")
+        
+        # Step 3: Leave group
+        try:
+            await telegram_client.send_message(LOG_CHANNEL, f"👋 Leaving group...")
+            await telegram_client.leave_chat(group_link)
+            await telegram_client.send_message(LOG_CHANNEL, f"✅ Left group successfully")
+            print("✅ Bot left group")
+        except Exception as e:
+            await telegram_client.send_message(LOG_CHANNEL, f"⚠️ Error leaving group: {type(e).__name__}")
+            print(f"Error leaving group: {e}")
+        
+        # Step 4: Send DMs (all UIDs are now valid peers)
+        await telegram_client.send_message(LOG_CHANNEL, f"💬 Starting to send DMs...")
+        
         for serial, contact in enumerate(contacts, start=1):
             try:
                 result = await send_to_user(contact, message, serial)
             except Exception as e:
-                # Catch anything send_to_user itself doesn't handle,
-                # so one bad contact can't kill the whole batch silently.
                 print(f"Unhandled error on #{serial}: {e}")
                 try:
                     await telegram_client.send_message(LOG_CHANNEL,
-                        f"❌ **#{serial} ERROR**\n{type(e).__name__}: {e}"
+                        f"❌ **#{serial} ERROR**\n{type(e).__name__}: {str(e)[:50]}"
                     )
                 except Exception:
                     pass
                 result = "failed"
+            
             if result == "sent": total_sent += 1
             elif result == "skipped": total_skipped += 1
             else: total_failed += 1
+            
             delay = random.randint(45, 90)
             print(f"Waiting {delay}s...")
             await asyncio.sleep(delay)
+        
         end_time = datetime.now(IST).strftime("%d %b %Y, %H:%M IST")
         await telegram_client.send_message(LOG_CHANNEL,
             f"✅ **OUTREACH COMPLETE**\n📨 Sent : {total_sent}\n⚠️ Skipped : {total_skipped}\n❌ Failed : {total_failed}\n🕐 {end_time}"
         )
+    
     except Exception as e:
-        # Catches anything that escapes the loop entirely (e.g. a crash
-        # right after OUTREACH STARTED) so it's never silently swallowed
-        # by run_coroutine_threadsafe.
         print(f"run_outreach crashed: {e}")
         try:
             await telegram_client.send_message(LOG_CHANNEL,
-                f"🛑 **OUTREACH CRASHED**\n{type(e).__name__}: {e}\n"
+                f"🛑 **OUTREACH CRASHED**\n{type(e).__name__}\n"
                 f"📨 Sent so far : {total_sent}\n⚠️ Skipped : {total_skipped}\n❌ Failed : {total_failed}"
             )
         except Exception:
             pass
+    
     finally:
         with processing_lock:
             processing = False
@@ -153,34 +200,47 @@ def send():
         if processing:
             return jsonify({"error": "Already processing. Please wait."}), 400
         processing = True
+    
     if 'csv_file' not in request.files:
         with processing_lock:
             processing = False
         return jsonify({"error": "No CSV file provided"}), 400
+    
     message = request.form.get('message', '').strip()
     if not message:
         with processing_lock:
             processing = False
         return jsonify({"error": "No message provided"}), 400
+    
+    group_link = request.form.get('group_link', '').strip()
+    if not group_link:
+        with processing_lock:
+            processing = False
+        return jsonify({"error": "No group link provided"}), 400
+    
     csv_file = request.files['csv_file']
     if not csv_file.filename.endswith('.csv'):
         with processing_lock:
             processing = False
         return jsonify({"error": "Please upload a CSV file"}), 400
+    
     contacts = read_csv(csv_file)
     if not contacts:
         with processing_lock:
             processing = False
         return jsonify({"error": "CSV is empty or invalid"}), 400
+    
     limited = contacts[:DAILY_LIMIT]
+    
     # Fire and forget — don't wait for it to finish
-    asyncio.run_coroutine_threadsafe(run_outreach(limited, message), loop)
+    asyncio.run_coroutine_threadsafe(run_outreach(limited, message, group_link), loop)
+    
     return jsonify({
         "success": True,
         "sent": len(limited),
         "skipped": 0,
         "failed": 0,
-        "note": "Job started! Check your log channel for live updates."
+        "note": "Job started! Bot will join group, load peers, leave, then send DMs. Check log channel for live updates."
     })
 
 if __name__ == '__main__':
